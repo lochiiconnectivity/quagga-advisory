@@ -1,0 +1,372 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+        "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+
+<head>
+	<title>Quagga Advisory - A patch to support draft-ietf-idr-advisory-00 in Quagga</title>
+	<meta http-equiv="content-type" 
+		content="text/html;charset=utf-8" />
+	<meta http-equiv="Content-Style-Type" content="text/css" />
+</head>
+
+<body bgcolor="#F8ECE0">
+	<h1>Quagga Advisory</h1>
+        <h2>A patch to support draft-ietf-idr-advisory-00 in Quagga</h2>
+	<h3>David Freedman</h3>
+	<hr>
+
+	<h2> 1. Introduction </h2>
+
+	<p>Quagga Advisory is a patch to support <a href="http://tools.ietf.org/html/draft-ietf-idr-advisory-00">draft-ietf-idr-advisory-00</a> in the Quagga BGPD. The following features of the draft are supported: </p>
+
+	<ul>
+		<li>Supports sending and receiving ADVISORY ADVISORY type messages</li>
+		<li>Supports sending and receiving STATIC ADVISORY type messages</li>
+		<li>Does not support peer groups</li>
+		<li>Does not support rate-limiting</li>
+	</ul>
+
+        <h2> 2. Installation </h2>
+
+        <p> You can obtain the latest version of the patch from <a href="http://www.convergence.cx/scripts/quagga.advisory.patch">here</a>, the patch is applied by the following command in your quagga source tree:</p>
+
+	<pre> patch -p1 < quagga.advisory.patch </pre>
+
+	<p> The patch was written for 0.99.15, not tested on anything earlier </p>
+
+
+	<h2> 3. Usage </h2>
+
+	<p> The patch introduces two new configuration directives: </p>
+
+	<big><b><em>neighbor &lt;neighbor&gt; advisory</em></b></big>
+	
+	<p>The <em>neighbor &lt;neighbor&gt; advisory</em> configuration directive enables Advisory messages of both types (Advisory + Static) to be sent to and received from the peer. The directive exists in the <b>main</b> BGP configuration portion and use of it sends a BGP <em> Cease Notification</em> to the peer (with subcode <em>Other Configuration Change</em>) which causes the session to be reset such that the Advisory capability can be negotiated.</p>
+
+	<p>Removal of the configuration directive will also cause both a Cease to be issued and the session to be reset such that the capability will no longer be negotiated.</p>
+
+	<b>Example:</b>
+	<pre>
+!
+router bgp 1234
+ neighbor 1.2.3.4 remote-as 5678
+ neighbor 1.2.3.4 advisory
+!
+	</pre>
+
+	<big><b><em>neighbor &lt;neighbor&gt; advisory-static &lt;string&gt;</em></b></big>
+
+        <p>The <em>neighbor &lt;neighbor&gt; advisory-static &lt;string&gt;</em> configuration directive sends an ADVISORY STATIC message to a peer enabled for ADVISORY messages,  for the string which can be a maximum of 120 characters in length. The string will be stored in the configuration and sent to the peer at the next OPEN such that the message is continually known by the peer. The chosen ADVISORY STRING for dispatch to the peer is displayed in the output of <em>show ip bgp neighbor <neighbor></em> along with any ADVISORY STATIC string sent by the peer to ourselves. </p>
+
+	<b>Example:</b>
+        <pre>
+!
+router bgp 1234
+ neighbor 1.2.3.4 remote-as 5678 
+ neighbor 1.2.3.4 advisory
+ neighbor 1.2.3.4 advisory-static Please contact +44 123 45678 for support
+!
+        </pre>
+
+
+	<p> The patch also introduces a new cli command: </p>
+
+	<big><b><em>advisory neighbor &lt;neighbor&gt; &lt;string&gt;</em></b></big>
+
+	<p>The <em>advisory neighbor &lt;neighbor&gt; &lt;string&gt;</em> cli command will send an ADVISORY ADVISORY message to a peer enabled for ADVISORY messages,  for the string which can be a maximum of 120 characters in length. The string will be dispatched immediately to the peer and if accepted will be logged.</p>
+
+        <b>Example:</b>
+        <pre>
+advisory neighbor 1.2.3.4 Maintenance about to start, should last 15mins
+	</pre>
+
+	<h2> 4. Examples </h2>
+
+
+
+	<h3> 4.1. Configuring advisory support between peers </h3>
+
+	<p> Router 1: </p>
+
+	<pre>
+!
+hostname adv-test1
+password line
+enable password enable
+!
+router bgp 1234
+ bgp router-id 192.168.10.1
+ neighbor 192.168.10.2 remote-as 5678
+ neighbor 192.168.10.2 advisory
+ neighbor 192.168.10.2 update-source 192.168.10.1
+!
+line vty
+!
+	</pre>
+
+	<p> Router 2: </p>
+
+	<pre>
+hostname adv-test2
+password line
+enable password enable
+!
+router bgp 5678
+ bgp router-id 192.168.10.2
+ neighbor 192.168.10.1 remote-as 1234
+ neighbor 192.168.10.1 advisory
+ neighbor 192.168.10.1 update-source 192.168.10.2
+!
+line vty
+!
+
+	</pre>
+
+	<p> Router 1 </p>
+
+	<pre>
+adv-test1# sh ip bgp neighbor
+BGP neighbor is 192.168.0.2, remote AS 5678, local AS 1234, external link
+  BGP version 4, remote router ID 192.168.10.2
+  BGP state = Established, up for 00:00:35
+  Last read 00:00:35, hold time is 180, keepalive interval is 60 seconds
+  Neighbor capabilities:
+    4 Byte AS: advertised and received
+    Route refresh: advertised and received(old & new)
+    Address family IPv4 Unicast: advertised and received
+    Advisory Capability: advertised received
+
+  Message statistics:
+    Inq depth is 0
+    Outq depth is 0
+                         Sent       Rcvd
+    Opens:                  2          0
+    Advisories:             1          1
+    Notifications:          0          0
+    Updates:                0          0
+    Keepalives:             2          1
+    Route Refresh:          0          0
+    Capability:             0          0
+    Total:                  4          1
+  Minimum time between advertisement runs is 5 seconds
+  Update source is 192.168.10.1
+
+ For address family: IPv4 Unicast
+  Community attribute sent to this neighbor(both)
+  0 accepted prefixes
+
+  Connections established 1; dropped 0
+  Last reset never
+Local host: 192.168.10.1, Local port: 179
+Foreign host: 192.168.10.2, Foreign port: 33103
+Nexthop: 192.168.10.2
+Nexthop global: ::
+Nexthop local: ::
+BGP connection: non shared network
+Read thread: on  Write thread: off
+	</pre>
+
+	<p> Router 2: </p>
+
+	<pre>
+adv-test2# sh ip bgp neighbor
+BGP neighbor is 192.168.0.1, remote AS 1234, local AS 5678, external link
+  BGP version 4, remote router ID 192.168.10.1
+  BGP state = Established, up for 00:00:35
+  Last read 00:00:35, hold time is 180, keepalive interval is 60 seconds
+  Neighbor capabilities:
+    4 Byte AS: advertised and received
+    Route refresh: advertised and received(old & new)
+    Address family IPv4 Unicast: advertised and received
+    Advisory Capability: advertised received
+
+  Message statistics:
+    Inq depth is 0
+    Outq depth is 0
+                         Sent       Rcvd
+    Opens:                  2          0
+    Advisories:             1          1
+    Notifications:          0          0
+    Updates:                0          0
+    Keepalives:             2          1
+    Route Refresh:          0          0
+    Capability:             0          0
+    Total:                  4          1
+  Minimum time between advertisement runs is 5 seconds
+  Update source is 192.168.10.2
+
+ For address family: IPv4 Unicast
+  Community attribute sent to this neighbor(both)
+  0 accepted prefixes
+
+  Connections established 1; dropped 0
+  Last reset never
+Local host: 192.168.10.2, Local port: 179
+Foreign host: 192.168.10.1, Foreign port: 33103
+Nexthop: 192.168.10.1
+Nexthop global: ::
+Nexthop local: ::
+BGP connection: non shared network
+Read thread: on  Write thread: off
+	</pre>
+
+	<h3> 4.2. Configuring an advisory static message between peers </h3>
+
+	<p> Router 1: </p>
+
+	<pre>
+!
+hostname adv-test1
+password line
+enable password enable
+!
+router bgp 1234
+ bgp router-id 192.168.10.1
+ neighbor 192.168.10.2 remote-as 5678
+ neighbor 192.168.10.2 advisory
+ neighbor 192.168.10.2 advisory-static This is a test message from router 1
+ neighbor 192.168.10.2 update-source 192.168.10.1
+!
+line vty
+!
+	</pre>
+
+	<p> Router 2: </p>
+
+	<pre>
+hostname adv-test2
+password line
+enable password enable
+!
+router bgp 5678
+ bgp router-id 192.168.10.2
+ neighbor 192.168.10.1 remote-as 1234
+ neighbor 192.168.10.1 advisory
+ neighbor 192.168.10.1 advisory-static This is a test message from router 2
+ neighbor 192.168.10.1 update-source 192.168.10.2
+!
+line vty
+!
+
+	</pre>
+
+	<p> Router 1 </p>
+
+	<pre>
+adv-test1# sh ip bgp neighbor
+BGP neighbor is 192.168.0.2, remote AS 5678, local AS 1234, external link
+  BGP version 4, remote router ID 192.168.10.2
+  BGP state = Established, up for 00:00:35
+  Last read 00:00:35, hold time is 180, keepalive interval is 60 seconds
+  Neighbor capabilities:
+    4 Byte AS: advertised and received
+    Route refresh: advertised and received(old & new)
+    Address family IPv4 Unicast: advertised and received
+    Advisory Capability: 
+                        advertised (Static string: This is a test message from router 1)
+                        received   (Static string: This is a test message from router 2)
+
+  Message statistics:
+    Inq depth is 0
+    Outq depth is 0
+                         Sent       Rcvd
+    Opens:                  2          0
+    Advisories:             1          1
+    Notifications:          0          0
+    Updates:                0          0
+    Keepalives:             2          1
+    Route Refresh:          0          0
+    Capability:             0          0
+    Total:                  4          1
+  Minimum time between advertisement runs is 5 seconds
+  Update source is 192.168.10.1
+
+ For address family: IPv4 Unicast
+  Community attribute sent to this neighbor(both)
+  0 accepted prefixes
+
+  Connections established 1; dropped 0
+  Last reset never
+Local host: 192.168.10.1, Local port: 179
+Foreign host: 192.168.10.2, Foreign port: 33103
+Nexthop: 192.168.10.2
+Nexthop global: ::
+Nexthop local: ::
+BGP connection: non shared network
+Read thread: on  Write thread: off
+	</pre>
+
+	<p> Router 2: </p>
+
+	<pre>
+adv-test2# sh ip bgp neighbor
+BGP neighbor is 192.168.0.1, remote AS 1234, local AS 5678, external link
+  BGP version 4, remote router ID 192.168.10.1
+  BGP state = Established, up for 00:00:35
+  Last read 00:00:35, hold time is 180, keepalive interval is 60 seconds
+  Neighbor capabilities:
+    4 Byte AS: advertised and received
+    Route refresh: advertised and received(old & new)
+    Address family IPv4 Unicast: advertised and received
+    Advisory Capability: 
+                        advertised (Static string: This is a test message from router 2)
+                        received   (Static string: This is a test message from router 1)
+
+  Message statistics:
+    Inq depth is 0
+    Outq depth is 0
+                         Sent       Rcvd
+    Opens:                  2          0
+    Advisories:             1          1
+    Notifications:          0          0
+    Updates:                0          0
+    Keepalives:             2          1
+    Route Refresh:          0          0
+    Capability:             0          0
+    Total:                  4          1
+  Minimum time between advertisement runs is 5 seconds
+  Update source is 192.168.10.2
+
+ For address family: IPv4 Unicast
+  Community attribute sent to this neighbor(both)
+  0 accepted prefixes
+
+  Connections established 1; dropped 0
+  Last reset never
+Local host: 192.168.10.2, Local port: 179
+Foreign host: 192.168.10.1, Foreign port: 33103
+Nexthop: 192.168.10.1
+Nexthop global: ::
+Nexthop local: ::
+BGP connection: non shared network
+Read thread: on  Write thread: off
+	</pre>
+
+	<h3> 4.3. Sending an on-demand advisory to peers </h3>
+
+	<p> Router 1 </p>
+	<pre>
+advisory neighbor 192.168.10.2 This is a test on-demand message
+	</pre>
+	<p> Router 2 </p>
+  	<pre>
+2009/11/16 12:19:54 BGP: ADVISORY 192.168.10.1 : This is a test on-demand message
+	</pre>
+
+	<h2> 5. TODO </h2>
+
+	<p>The following features are still under development</p>
+
+	<ul>
+		<li> Support for ADVISORY STATIC persisting after peer backward transitions <em>Complete 11/18</em></li>
+		<li> Handling of peer groups </li>
+		<li> Split of support for accepting message types </li>
+		<li> Rate limit of message types </li>
+	</ul>
+
+	<h2> 6. Contact </h2>
+
+	<p> Please send me a mail - my firstname.surname at uk.clara.net </p>
+</body>
+</html>

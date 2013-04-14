@@ -1,0 +1,785 @@
+diff -upwbr quagga/bgpd/bgpd.c quagga.new/bgpd/bgpd.c
+--- quagga/bgpd/bgpd.c	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgpd.c	2009-11-16 09:46:53.000000000 +0000
+@@ -2289,6 +2289,7 @@ static const struct peer_flag_action pee
+     { PEER_FLAG_STRICT_CAP_MATCH,         0, peer_change_none },
+     { PEER_FLAG_DYNAMIC_CAPABILITY,       0, peer_change_reset },
+     { PEER_FLAG_DISABLE_CONNECTED_CHECK,  0, peer_change_reset },
++    { PEER_FLAG_ADVISORY,                 0, peer_change_reset },
+     { 0, 0, 0 }
+   };
+ 
+@@ -2460,7 +2461,9 @@ peer_flag_modify (struct peer *peer, u_i
+     }
+ 
+   if (set)
++  {
+     SET_FLAG (peer->flags, flag);
++  }
+   else
+     UNSET_FLAG (peer->flags, flag);
+  
+@@ -2742,6 +2745,33 @@ peer_description_unset (struct peer *pee
+   return 0;
+ }
+ 
++/* Peer Advisory Static Set */
++int
++peer_advisory_static_adv_set (struct peer *peer, char *adv_static)
++{
++
++  if (peer->adv_static_adv)
++    XFREE (MTYPE_PEER_ADV, peer->adv_static_adv);
++
++  peer->adv_static_adv = XSTRDUP (MTYPE_PEER_ADV, adv_static);
++  bgp_advisory_send_with_data(peer, BGP_ADVISORY_STATIC, adv_static, strlen(adv_static));
++ 
++  return 0;
++}
++
++int
++peer_advisory_static_adv_unset (struct peer *peer)
++{
++  if (peer->adv_static_adv)
++    XFREE (MTYPE_PEER_ADV, peer->adv_static_adv);
++
++  peer->adv_static_adv = NULL;
++  bgp_advisory_send(peer, BGP_ADVISORY_STATIC);
++
++  return 0;
++
++}
++
+ /* Neighbor update-source. */
+ int
+ peer_update_source_if_set (struct peer *peer, const char *ifname)
+@@ -4639,6 +4669,19 @@ bgp_config_write_peer (struct vty *vty, 
+ 	    ! CHECK_FLAG (g_peer->flags, PEER_FLAG_DISABLE_CONNECTED_CHECK))
+ 	  vty_out (vty, " neighbor %s disable-connected-check%s", addr, VTY_NEWLINE);
+ 
++      /* Advisory  */
++      if (CHECK_FLAG (peer->flags, PEER_FLAG_ADVISORY))
++	if (! peer_group_active (peer) ||
++	    ! CHECK_FLAG (g_peer->flags, PEER_FLAG_ADVISORY))
++          {
++	  vty_out (vty, " neighbor %s advisory%s", addr, VTY_NEWLINE);
++          if (peer->adv_static_adv)
++            {
++		vty_out (vty, " neighbor %s advisory-static %s%s", addr, peer->adv_static_adv, VTY_NEWLINE);
++	    }
++	  }
++
++
+       /* Update-source. */
+       if (peer->update_if)
+ 	if (! peer_group_active (peer) || ! g_peer->update_if
+diff -upwbr quagga/bgpd/bgp_debug.c quagga.new/bgpd/bgp_debug.c
+--- quagga/bgpd/bgp_debug.c	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_debug.c	2009-11-15 18:37:18.000000000 +0000
+@@ -82,6 +82,14 @@ const char *bgp_type_str[] =
+   "CAPABILITY"
+ };
+ 
++/* message for BGP-4 Advisory */
++static const struct message bgp_advisory_msg[] =
++{
++ { BGP_ADVISORY_ADVISORY, "Advisory String" },
++ { BGP_ADVISORY_STATIC, "Static String" },
++};
++static const int bgp_advisory_msg_max = BGP_ADVISORY_MAX;
++
+ /* message for BGP-4 Notify */
+ static const struct message bgp_notify_msg[] = 
+ {
+@@ -233,6 +241,19 @@ bgp_dump_attr (struct peer *peer, struct
+     return 0;
+ }
+ 
++/* dump advisory packet */
++void
++bgp_advisory_print(struct peer *peer, struct bgp_advisory *bgp_advisory, 
++                 const char *direct)
++{
++    plog_debug (peer->log, "%s %s ADVISORY %d (%s) %d bytes %s",
++	       peer ? peer->host : "",
++	       direct, bgp_advisory->type,
++	       LOOKUP (bgp_advisory_msg, bgp_advisory->type),
++	       bgp_advisory->length,
++	       bgp_advisory->data ? bgp_advisory->data : "");
++}
++
+ /* dump notify packet */
+ void
+ bgp_notify_print(struct peer *peer, struct bgp_notify *bgp_notify, 
+diff -upwbr quagga/bgpd/bgp_debug.h quagga.new/bgpd/bgp_debug.h
+--- quagga/bgpd/bgp_debug.h	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_debug.h	2009-11-15 18:37:17.000000000 +0000
+@@ -120,6 +120,7 @@ extern unsigned long term_bgp_debug_zebr
+ extern const char *bgp_type_str[];
+ 
+ extern int bgp_dump_attr (struct peer *, struct attr *, char *, size_t);
++extern void bgp_advisory_print (struct peer *, struct bgp_advisory *, const char *);
+ extern void bgp_notify_print (struct peer *, struct bgp_notify *, const char *);
+ 
+ extern const struct message bgp_status_msg[];
+diff -upwbr quagga/bgpd/bgpd.h quagga.new/bgpd/bgpd.h
+--- quagga/bgpd/bgpd.h	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgpd.h	2009-11-16 09:20:09.000000000 +0000
+@@ -180,6 +180,14 @@ struct peer_group
+   struct peer *conf;
+ };
+ 
++/* BGP Advisory message format */
++struct bgp_advisory
++{
++  u_char type;
++  char *data;
++  bgp_size_t length;
++};
++
+ /* BGP Notify message format. */
+ struct bgp_notify 
+ {
+@@ -304,6 +312,8 @@ struct peer
+   int fd;			/* File descriptor */
+   int ttl;			/* TTL of TCP connection to the peer. */
+   char *desc;			/* Description of the peer. */
++  char *adv_static_adv;		/* ADVISORY Static string advertised*/
++  char *adv_static_rcv;		/* ADVISORY Static string received */
+   unsigned short port;          /* Destination port for peer */
+   char *host;			/* Printable address of the peer. */
+   union sockunion su;		/* Sockunion address of the peer. */
+@@ -339,6 +349,9 @@ struct peer
+ #define PEER_CAP_RESTART_RCV                (1 << 6) /* restart received */
+ #define PEER_CAP_AS4_ADV                    (1 << 7) /* as4 advertised */
+ #define PEER_CAP_AS4_RCV                    (1 << 8) /* as4 received */
++#define PEER_CAP_ADVISORY_ADV		    (1 << 9) /* advisory advertised */
++#define PEER_CAP_ADVISORY_RCV		    (1 << 10) /* advisory received */
++
+ 
+   /* Capability flags (reset in bgp_stop) */
+   u_int16_t af_cap[AFI_MAX][SAFI_MAX];
+@@ -361,6 +374,7 @@ struct peer
+ #define PEER_FLAG_DYNAMIC_CAPABILITY        (1 << 5) /* dynamic capability */
+ #define PEER_FLAG_DISABLE_CONNECTED_CHECK   (1 << 6) /* disable-connected-check */
+ #define PEER_FLAG_LOCAL_AS_NO_PREPEND       (1 << 7) /* local-as no-prepend */
++#define PEER_FLAG_ADVISORY                  (1 << 8) /* advisory */
+ 
+   /* NSF mode (graceful restart) */
+   u_char nsf[AFI_MAX][SAFI_MAX];
+@@ -461,6 +475,8 @@ struct peer
+   time_t update_time;		/* Update message received time. */
+   u_int32_t keepalive_in;	/* Keepalive input count */
+   u_int32_t keepalive_out;	/* Keepalive output count */
++  u_int32_t advisory_in;	/* Advisory input count */
++  u_int32_t advisory_out;	/* Advisory output count */
+   u_int32_t notify_in;		/* Notify input count */
+   u_int32_t notify_out;		/* Notify output count */
+   u_int32_t refresh_in;		/* Route Refresh input count */
+@@ -578,6 +594,7 @@ struct bgp_nlri
+ #define BGP_MSG_OPEN_MIN_SIZE                   (BGP_HEADER_SIZE + 10)
+ #define BGP_MSG_UPDATE_MIN_SIZE                 (BGP_HEADER_SIZE + 4)
+ #define BGP_MSG_NOTIFY_MIN_SIZE                 (BGP_HEADER_SIZE + 2)
++#define BGP_MSG_ADVISORY_MIN_SIZE               (BGP_HEADER_SIZE + 1)
+ #define BGP_MSG_KEEPALIVE_MIN_SIZE              (BGP_HEADER_SIZE + 0)
+ #define BGP_MSG_ROUTE_REFRESH_MIN_SIZE          (BGP_HEADER_SIZE + 4)
+ #define BGP_MSG_CAPABILITY_MIN_SIZE             (BGP_HEADER_SIZE + 3)
+@@ -586,6 +603,7 @@ struct bgp_nlri
+ #define	BGP_MSG_OPEN		                 1
+ #define	BGP_MSG_UPDATE		                 2
+ #define	BGP_MSG_NOTIFY		                 3
++#define	BGP_MSG_ADVISORY	               200
+ #define	BGP_MSG_KEEPALIVE	                 4
+ #define BGP_MSG_ROUTE_REFRESH_NEW                5
+ #define BGP_MSG_CAPABILITY                       6
+@@ -621,6 +639,11 @@ struct bgp_nlri
+ #define BGP_ORIGIN_EGP                           1
+ #define BGP_ORIGIN_INCOMPLETE                    2
+ 
++/* BGP Advisory types */
++#define BGP_ADVISORY_ADVISORY			 1
++#define BGP_ADVISORY_STATIC			 2
++#define BGP_ADVISORY_MAX                         130
++
+ /* BGP notify message codes.  */
+ #define BGP_NOTIFY_HEADER_ERR                    1
+ #define BGP_NOTIFY_OPEN_ERR                      2
+@@ -896,6 +919,9 @@ extern int peer_ebgp_multihop_unset (str
+ extern int peer_description_set (struct peer *, char *);
+ extern int peer_description_unset (struct peer *);
+ 
++extern int peer_advisory_static_adv_set (struct peer *, char *);
++extern int peer_advisory_static_adv_unset (struct peer *);
++
+ extern int peer_update_source_if_set (struct peer *, const char *);
+ extern int peer_update_source_addr_set (struct peer *, union sockunion *);
+ extern int peer_update_source_unset (struct peer *);
+diff -upwbr quagga/bgpd/bgp_fsm.c quagga.new/bgpd/bgp_fsm.c
+--- quagga/bgpd/bgp_fsm.c	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_fsm.c	2009-11-16 09:27:26.000000000 +0000
+@@ -808,6 +808,11 @@ bgp_establish (struct peer *peer)
+   if (bgp_flag_check (peer->bgp, BGP_FLAG_LOG_NEIGHBOR_CHANGES))
+     zlog_info ("%%ADJCHANGE: neighbor %s Up", peer->host);
+ 
++  /* Advisory Static */
++  if (CHECK_FLAG (peer->cap, PEER_CAP_ADVISORY_ADV))
++   if (peer->adv_static_adv) 
++    bgp_advisory_send_with_data(peer, BGP_ADVISORY_STATIC, peer->adv_static_adv, strlen(peer->adv_static_adv));
++
+   /* graceful restart */
+   UNSET_FLAG (peer->sflags, PEER_STATUS_NSF_WAIT);
+   for (afi = AFI_IP ; afi < AFI_MAX ; afi++)
+diff -upwbr quagga/bgpd/bgp_open.c quagga.new/bgpd/bgp_open.c
+--- quagga/bgpd/bgp_open.c	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_open.c	2009-11-16 09:14:16.000000000 +0000
+@@ -451,6 +451,7 @@ static const struct message capcode_str[
+   { CAPABILITY_CODE_RESTART,		"Graceful Restart"		},
+   { CAPABILITY_CODE_AS4,		"4-octet AS number"		},
+   { CAPABILITY_CODE_DYNAMIC,		"Dynamic"			},
++  { CAPABILITY_CODE_ADVISORY,		"Advisory"			},
+   { CAPABILITY_CODE_REFRESH_OLD,	"Route Refresh (Old)"		},
+   { CAPABILITY_CODE_ORF_OLD,		"ORF (Old)"			},
+ };
+@@ -463,6 +464,7 @@ static const size_t cap_minsizes[] = 
+   [CAPABILITY_CODE_REFRESH]	= CAPABILITY_CODE_REFRESH_LEN,
+   [CAPABILITY_CODE_ORF]		= sizeof (struct capability_orf_entry),
+   [CAPABILITY_CODE_RESTART]	= sizeof (struct capability_gr),
++  [CAPABILITY_CODE_ADVISORY]	= CAPABILITY_CODE_ADVISORY_LEN,
+   [CAPABILITY_CODE_AS4]		= CAPABILITY_CODE_AS4_LEN,
+   [CAPABILITY_CODE_DYNAMIC]	= CAPABILITY_CODE_DYNAMIC_LEN,
+   [CAPABILITY_CODE_REFRESH_OLD]	= CAPABILITY_CODE_REFRESH_LEN,
+@@ -522,6 +524,7 @@ bgp_capability_parse (struct peer *peer,
+           case CAPABILITY_CODE_ORF:
+           case CAPABILITY_CODE_ORF_OLD:
+           case CAPABILITY_CODE_RESTART:
++          case CAPABILITY_CODE_ADVISORY:
+           case CAPABILITY_CODE_AS4:
+           case CAPABILITY_CODE_DYNAMIC:
+               /* Check length. */
+@@ -580,6 +583,9 @@ bgp_capability_parse (struct peer *peer,
+             if (bgp_capability_restart (peer, &caphdr))
+               return -1;
+             break;
++          case CAPABILITY_CODE_ADVISORY:
++            SET_FLAG (peer->cap, PEER_CAP_ADVISORY_RCV);
++            break;
+           case CAPABILITY_CODE_DYNAMIC:
+             SET_FLAG (peer->cap, PEER_CAP_DYNAMIC_RCV);
+             break;
+@@ -757,7 +763,7 @@ bgp_open_option_parse (struct peer *peer
+       /* Option length check. */
+       if (STREAM_READABLE (s) < opt_length)
+ 	{
+-	  zlog_info ("%s Option length error", peer->host);
++	  zlog_info ("%s Option length error %d %d", peer->host, STREAM_READABLE (s), opt_length);
+ 	  bgp_notify_send (peer, BGP_NOTIFY_CEASE, 0);
+ 	  return -1;
+ 	}
+@@ -1050,6 +1056,18 @@ bgp_open_capability (struct stream *s, s
+       stream_putw (s, peer->bgp->restart_time);
+      }
+ 
++  /* Advisory capability */
++  if (CHECK_FLAG (peer->flags, PEER_FLAG_ADVISORY))
++    {
++      SET_FLAG (peer->cap, PEER_CAP_ADVISORY_ADV);
++      stream_putc (s, BGP_OPEN_OPT_CAP);
++      stream_putc (s, CAPABILITY_CODE_ADVISORY_LEN + 2);
++      stream_putc (s, CAPABILITY_CODE_ADVISORY);
++      stream_putc (s, CAPABILITY_CODE_ADVISORY_LEN);
++      stream_putc (s, ADVISORY_ADVISORY);
++      stream_putc (s, ADVISORY_STRING);
++     }
++
+   /* Total Opt Parm Len. */
+   len = stream_get_endp (s) - cp - 1;
+   stream_putc_at (s, cp, len);
+diff -upwbr quagga/bgpd/bgp_open.h quagga.new/bgpd/bgp_open.h
+--- quagga/bgpd/bgp_open.h	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_open.h	2009-11-15 18:37:26.000000000 +0000
+@@ -75,6 +75,7 @@ struct capability_gr
+ #define CAPABILITY_CODE_DYNAMIC        66 /* Dynamic Capability */
+ #define CAPABILITY_CODE_REFRESH_OLD   128 /* Route Refresh Capability(cisco) */
+ #define CAPABILITY_CODE_ORF_OLD       130 /* Cooperative Route Filtering Capability(cisco) */
++#define CAPABILITY_CODE_ADVISORY      200 /* Advisory Capability - Private implementation example */
+ 
+ /* Capability Length */
+ #define CAPABILITY_CODE_MP_LEN          4
+@@ -82,6 +83,7 @@ struct capability_gr
+ #define CAPABILITY_CODE_DYNAMIC_LEN     0
+ #define CAPABILITY_CODE_RESTART_LEN     2 /* Receiving only case */
+ #define CAPABILITY_CODE_AS4_LEN         4
++#define CAPABILITY_CODE_ADVISORY_LEN    2
+ 
+ /* Cooperative Route Filtering Capability.  */
+ 
+@@ -102,6 +104,11 @@ struct capability_gr
+ #define RESTART_R_BIT              0x8000
+ #define RESTART_F_BIT              0x80
+ 
++/* Advisory Types */
++#define ADVISORY_ADVISORY	   0x01
++#define ADVISORY_STRING	   	   0x02
++
++
+ extern int bgp_open_option_parse (struct peer *, u_char, int *);
+ extern void bgp_open_capability (struct stream *, struct peer *);
+ extern void bgp_capability_vty_out (struct vty *, struct peer *);
+diff -upwbr quagga/bgpd/bgp_packet.c quagga.new/bgpd/bgp_packet.c
+--- quagga/bgpd/bgp_packet.c	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_packet.c	2009-11-17 11:57:58.000000000 +0000
+@@ -664,6 +664,9 @@ bgp_write (struct thread *thread)
+ 	case BGP_MSG_UPDATE:
+ 	  peer->update_out++;
+ 	  break;
++        case BGP_MSG_ADVISORY:
++          peer->advisory_out++; 
++	  break;
+ 	case BGP_MSG_NOTIFY:
+ 	  peer->notify_out++;
+ 	  /* Double start timer. */
+@@ -920,6 +923,96 @@ bgp_notify_send (struct peer *peer, u_ch
+   bgp_notify_send_with_data (peer, code, sub_code, NULL, 0);
+ }
+ 
++/* Send BGP advisory packet with data portion. */
++void
++bgp_advisory_send_with_data (struct peer *peer, u_char type, char *data, size_t datalen)
++{
++  struct stream *s;
++  int length;
++  
++  /* Check datalen is within bounds */
++  if ((datalen < 1) || (datalen > (BGP_ADVISORY_MAX -8)))
++  {
++   zlog_err("Advisory length of %d out of bounds", datalen);
++   return;
++  }
++
++  /* Check peer wants advisory */
++  if (!CHECK_FLAG (peer->cap, PEER_CAP_ADVISORY_RCV))
++  {
++   zlog_debug("Advisory message not sent to %s - capability not negotiated", peer->host);
++   return;
++  }
++
++  /* Allocate new stream. */
++  s = stream_new (BGP_MAX_PACKET_SIZE);
++
++  /* Make advisory packet. */
++  bgp_packet_set_marker (s, BGP_MSG_ADVISORY);
++
++  /* Set advisory type */
++  stream_putc (s, type);        /* BGP advisory type */
++
++  /* If advisory data is present. */
++  if (data)
++    stream_write (s, data, datalen);
++  
++  /* Set BGP packet length. */
++  length = bgp_packet_set_size (s);
++  
++  /* Add packet to the peer. */
++  stream_fifo_clean (peer->obuf);
++  bgp_packet_add (peer, s);
++
++  /* For debug */
++  {
++    struct bgp_advisory bgp_advisory;
++    int first = 0;
++    int i;
++    char c[4];
++
++    bgp_advisory.type = type;
++    bgp_advisory.data = NULL;
++    bgp_advisory.length = length - BGP_MSG_ADVISORY_MIN_SIZE;
++    
++    if (bgp_advisory.length)
++      {
++	bgp_advisory.data = XMALLOC (MTYPE_TMP, bgp_advisory.length * 3);
++	for (i = 0; i < bgp_advisory.length; i++)
++	  if (first)
++	    {
++	      sprintf (c, " %02x", data[i]);
++	      strcat (bgp_advisory.data, c);
++	    }
++	  else
++	    {
++	      first = 1;
++	      sprintf (c, "%02x", data[i]);
++	      strcpy (bgp_advisory.data, c);
++	    }
++      }
++    bgp_advisory_print (peer, &bgp_advisory, "sending");
++    if (bgp_advisory.data)
++      XFREE (MTYPE_TMP, bgp_advisory.data);
++  }
++
++  if (BGP_DEBUG (normal, NORMAL))
++    zlog_debug ("%s send advisory type %d, length (incl. header) %d",
++	       peer->host, BGP_MSG_ADVISORY, length);
++
++  /* Call imidiately. */
++  BGP_WRITE_OFF (peer->t_write);
++
++  //bgp_write_advisory (peer);
++}
++
++/* Send BGP advisory packet. */
++void
++bgp_advisory_send (struct peer *peer, u_char type)
++{
++  bgp_advisory_send_with_data (peer, type, "\0", 1);
++}
++
+ static const char *
+ afi2str (afi_t afi)
+ {
+@@ -1837,6 +1930,68 @@ bgp_update_receive (struct peer *peer, b
+   return 0;
+ }
+ 
++
++/* Advisory message treatment function. */
++static void
++bgp_advisory_receive (struct peer *peer, bgp_size_t size)
++{
++  struct bgp_advisory bgp_advisory;
++  char *dataptr = NULL;
++
++  bgp_advisory.type = stream_getc (peer->ibuf);
++  bgp_advisory.length = ( size - 1 );
++  if (bgp_advisory.length) 
++  {
++  if ((bgp_advisory.length < 1) || (bgp_advisory.length > (BGP_ADVISORY_MAX -8)))
++  {
++   zlog_err("Advisory length of %d out of bounds", bgp_advisory.length);
++   return;
++  }
++   if (bgp_advisory.data = XMALLOC (MTYPE_TMP, ( bgp_advisory.length + 1) ))
++   {
++    /* Copy in the data from the stream, and null terminate it properly */
++    memcpy (bgp_advisory.data, stream_pnt (peer->ibuf), bgp_advisory.length);
++    dataptr = bgp_advisory.data;
++    dataptr += bgp_advisory.length;
++    *dataptr = '\0';
++   }
++   else 
++   {
++    zlog_err("XMALLOC Fail when trying to allocate memory for advisory data - please investigate");
++    return;
++   }
++  }
++  else
++   bgp_advisory.data = NULL;
++
++
++  /* For debug */
++  bgp_advisory_print(peer, &bgp_advisory, "received");
++
++   /* Process it */
++   if (bgp_advisory.data)
++   {
++     if (bgp_advisory.type == BGP_ADVISORY_ADVISORY) 
++     {
++       zlog_info ("ADVISORY %s : %s", peer->host, bgp_advisory.data);
++     }
++     else if (bgp_advisory.type == BGP_ADVISORY_STATIC) 
++     {
++        zlog_info ("ADVISORY %s : %s", peer->host, bgp_advisory.data);
++	if (peer->adv_static_rcv)
++         XFREE (MTYPE_PEER_ADV, peer->adv_static_rcv);
++	peer->adv_static_rcv = XSTRDUP (MTYPE_PEER_ADV, bgp_advisory.data);
++     }	
++
++     XFREE (MTYPE_TMP, bgp_advisory.data);
++   }
++
++
++  /* peer count update */
++  peer->advisory_in++;
++
++}
++
+ /* Notify message treatment function. */
+ static void
+ bgp_notify_receive (struct peer *peer, bgp_size_t size)
+@@ -2396,6 +2551,7 @@ bgp_read (struct thread *thread)
+ 	  && type != BGP_MSG_NOTIFY && type != BGP_MSG_KEEPALIVE 
+ 	  && type != BGP_MSG_ROUTE_REFRESH_NEW
+ 	  && type != BGP_MSG_ROUTE_REFRESH_OLD
++          && type != BGP_MSG_ADVISORY
+ 	  && type != BGP_MSG_CAPABILITY)
+ 	{
+ 	  if (BGP_DEBUG (normal, NORMAL))
+@@ -2414,6 +2570,7 @@ bgp_read (struct thread *thread)
+ 	  || (type == BGP_MSG_OPEN && size < BGP_MSG_OPEN_MIN_SIZE)
+ 	  || (type == BGP_MSG_UPDATE && size < BGP_MSG_UPDATE_MIN_SIZE)
+ 	  || (type == BGP_MSG_NOTIFY && size < BGP_MSG_NOTIFY_MIN_SIZE)
++	  || (type == BGP_MSG_ADVISORY && size < BGP_MSG_ADVISORY_MIN_SIZE)
+ 	  || (type == BGP_MSG_KEEPALIVE && size != BGP_MSG_KEEPALIVE_MIN_SIZE)
+ 	  || (type == BGP_MSG_ROUTE_REFRESH_NEW && size < BGP_MSG_ROUTE_REFRESH_MIN_SIZE)
+ 	  || (type == BGP_MSG_ROUTE_REFRESH_OLD && size < BGP_MSG_ROUTE_REFRESH_MIN_SIZE)
+@@ -2460,6 +2617,9 @@ bgp_read (struct thread *thread)
+       peer->readtime = time(NULL);    /* Last read timer reset */
+       bgp_update_receive (peer, size);
+       break;
++    case BGP_MSG_ADVISORY:
++      bgp_advisory_receive (peer, size);
++      break;
+     case BGP_MSG_NOTIFY:
+       bgp_notify_receive (peer, size);
+       break;
+diff -upwbr quagga/bgpd/bgp_packet.h quagga.new/bgpd/bgp_packet.h
+--- quagga/bgpd/bgp_packet.h	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_packet.h	2009-11-16 09:48:06.000000000 +0000
+@@ -43,6 +43,8 @@ extern int bgp_write (struct thread *);
+ 
+ extern void bgp_keepalive_send (struct peer *);
+ extern void bgp_open_send (struct peer *);
++extern void bgp_advisory_send (struct peer *, u_char);
++extern void bgp_advisory_send_with_data (struct peer *, u_char, char *, size_t);
+ extern void bgp_notify_send (struct peer *, u_int8_t, u_int8_t);
+ extern void bgp_notify_send_with_data (struct peer *, u_int8_t, u_int8_t, 
+                                 u_int8_t *, size_t);
+diff -upwbr quagga/bgpd/bgp_vty.c quagga.new/bgpd/bgp_vty.c
+--- quagga/bgpd/bgp_vty.c	2009-11-16 12:34:59.000000000 +0000
++++ quagga.new/bgpd/bgp_vty.c	2009-11-18 09:19:36.000000000 +0000
+@@ -2718,7 +2718,6 @@ DEFUN (no_neighbor_disable_connected_che
+ {
+   return peer_flag_unset_vty (vty, argv[0], PEER_FLAG_DISABLE_CONNECTED_CHECK);
+ }
+-
+ /* Enforce multihop.  */
+ ALIAS (neighbor_disable_connected_check,
+        neighbor_enforce_multihop_cmd,
+@@ -2736,6 +2735,152 @@ ALIAS (no_neighbor_disable_connected_che
+        NEIGHBOR_ADDR_STR2
+        "Enforce EBGP neighbors perform multihop\n")
+ 
++
++/*
++DEFUN (clear_ip_bgp_peer,
++       clear_ip_bgp_peer_cmd,
++       "clear ip bgp (A.B.C.D|X:X::X:X)",
++       CLEAR_STR
++       IP_STR
++       BGP_STR
++       "BGP neighbor IP address to clear\n"
++       "BGP IPv6 neighbor to clear\n")
++
++ALIAS (show_ip_bgp_neighbors_peer,
++       show_ip_bgp_vpnv4_rd_neighbors_peer_cmd,
++       "show ip bgp vpnv4 rd ASN:nn_or_IP-address:nn neighbors A.B.C.D",
++       SHOW_STR
++       IP_STR
++       BGP_STR
++       "Display VPNv4 NLRI specific information\n"
++       "Display information about all VPNv4 NLRIs\n"
++       "Detailed information on TCP and BGP neighbor connections\n"
++       "Neighbor to display information about\n")
++
++
++*/
++
++/* advisory */
++DEFUN (adv_logmsg,
++       adv_logmsg_cmd,
++       "advisory neighbor (A.B.C.D|X:X::X:X) .MESSAGE",
++       "Send an advisory message to advisory enabled peer\n"
++       "Neighbor to send advisory message to\n")
++{
++
++  struct peer *peer;
++  char *str;
++  int len;
++
++  peer = peer_and_group_lookup_vty (vty, argv[0]);
++  if (! peer)
++    return CMD_WARNING;
++
++  if ((!CHECK_FLAG (peer->flags, PEER_FLAG_ADVISORY)) || (!CHECK_FLAG (peer->cap, PEER_CAP_ADVISORY_RCV)))
++  {
++   zlog_err("Can not send advisory to %s - not supported", peer->host);
++   return CMD_WARNING;
++  }
++
++  str = argv_concat(argv, argc, 1);
++  len = strlen(str);
++
++  if ((len < 1) || (len > (BGP_ADVISORY_MAX -8)))
++  {
++   zlog_err("Advisory length of %d out of bounds", len);
++   return CMD_WARNING;
++  }
++
++  bgp_advisory_send_with_data (peer, BGP_ADVISORY_ADVISORY, str, len);
++
++  XFREE (MTYPE_TMP, str);
++
++  return CMD_SUCCESS;
++
++}
++DEFUN (neighbor_advisory,
++       neighbor_advisory_cmd,
++       NEIGHBOR_CMD2 "advisory",
++       NEIGHBOR_STR
++       NEIGHBOR_ADDR_STR2
++       "Enable exchange of advisory messages\n")
++{
++   return peer_flag_set_vty (vty, argv[0], PEER_FLAG_ADVISORY);
++}
++
++DEFUN (no_neighbor_advisory,
++       no_neighbor_advisory_cmd,
++       NO_NEIGHBOR_CMD2 "advisory",
++       NO_STR
++       NEIGHBOR_STR
++       NEIGHBOR_ADDR_STR2
++       "Enable exchange of advisory messages\n")
++{
++  return peer_flag_unset_vty (vty, argv[0], PEER_FLAG_ADVISORY);
++}
++
++/* advisory static send*/
++DEFUN (neighbor_advisory_static,
++       neighbor_advisory_static_cmd,
++       NEIGHBOR_CMD2 "advisory-static .LINE",
++       NEIGHBOR_STR
++       NEIGHBOR_ADDR_STR2
++       "Send up to 120 characters to use as static string\n")
++{
++  struct peer *peer;
++  char *str;
++  int len;
++
++  peer = peer_and_group_lookup_vty (vty, argv[0]);
++  if (! peer)
++    return CMD_WARNING;
++
++  if ((!CHECK_FLAG (peer->flags, PEER_FLAG_ADVISORY)) || (!CHECK_FLAG (peer->cap, PEER_CAP_ADVISORY_RCV)))
++  {
++   zlog_err("Can not send advisory to %s - not supported", peer->host);
++   return CMD_WARNING;
++  }
++
++  str = argv_concat(argv, argc, 1);
++  len = strlen(str);
++
++  if ((len < 1) || (len > (BGP_ADVISORY_MAX -8)))
++  {
++   zlog_err("Advisory length of %d out of bounds", len);
++   return CMD_WARNING;
++  }
++
++  peer_advisory_static_adv_set (peer, str);
++
++  XFREE (MTYPE_TMP, str);
++
++  return CMD_SUCCESS;
++
++}
++
++DEFUN (no_neighbor_advisory_static,
++       no_neighbor_advisory_static_cmd,
++       NO_NEIGHBOR_CMD2 "advisory-static",
++       NO_STR
++       NEIGHBOR_STR
++       NEIGHBOR_ADDR_STR2
++       "Send up to 120 characters to use as static string\n")
++{
++  struct peer *peer;
++
++  peer = peer_and_group_lookup_vty (vty, argv[0]);
++  if (! peer)
++    return CMD_WARNING;
++
++  if (!CHECK_FLAG (peer->flags, PEER_FLAG_ADVISORY))
++    return CMD_WARNING;
++
++  peer_advisory_static_adv_unset (peer);
++
++  return CMD_SUCCESS;
++}
++
++
+ DEFUN (neighbor_description,
+        neighbor_description_cmd,
+        NEIGHBOR_CMD2 "description .LINE",
+@@ -7437,8 +7582,43 @@ bgp_show_peer (struct vty *vty, struct p
+ 		  vty_out (vty, "%s", VTY_NEWLINE);
+ 		}
+ 	    }
++           /* Advisory */
++           if (CHECK_FLAG (p->cap, PEER_CAP_ADVISORY_RCV)
++               || CHECK_FLAG (p->cap, PEER_CAP_ADVISORY_ADV))
++           {
++             vty_out (vty, "    Advisory Capability:");
++             if (CHECK_FLAG (p->cap, PEER_CAP_ADVISORY_ADV))
++             {
++		if (p->adv_static_adv)
++                {
++			vty_out (vty, "%s                        advertised (Static string: %s)", VTY_NEWLINE, p->adv_static_adv);
++                }
++		else {
++			vty_out (vty, " advertised", VTY_NEWLINE);
++		}
++             }
++             if (CHECK_FLAG (p->cap, PEER_CAP_ADVISORY_RCV))
++             {
++		if (p->adv_static_rcv)
++                {
++			vty_out (vty, "%s                        received   (Static string: %s)", VTY_NEWLINE, p->adv_static_rcv);
+ 	}
++		else {
++			vty_out (vty, " received", VTY_NEWLINE);
+     }
++             }
++	      vty_out (vty, "%s", VTY_NEWLINE);
++           }
++	}
++    }
++
++    /* Last Advisory static string
++     * Only display if we are no longer receiving ADVISORY capability
++     * but have a message in the advisory static buffer */
++
++    if (!CHECK_FLAG (p->cap, PEER_CAP_ADVISORY_RCV))
++     if (p->adv_static_rcv)
++      vty_out (vty, "  Last advisory static message received: %s %s", p->adv_static_rcv, VTY_NEWLINE);
+ 
+   /* graceful restart information */
+   if (CHECK_FLAG (p->cap, PEER_CAP_RESTART_RCV)
+@@ -7489,6 +7669,7 @@ bgp_show_peer (struct vty *vty, struct p
+   vty_out (vty, "    Outq depth is %lu%s", (unsigned long) p->obuf->count, VTY_NEWLINE);
+   vty_out (vty, "                         Sent       Rcvd%s", VTY_NEWLINE);
+   vty_out (vty, "    Opens:         %10d %10d%s", p->open_out, p->open_in, VTY_NEWLINE);
++  vty_out (vty, "    Advisories:    %10d %10d%s", p->advisory_out, p->advisory_in, VTY_NEWLINE);
+   vty_out (vty, "    Notifications: %10d %10d%s", p->notify_out, p->notify_in, VTY_NEWLINE);
+   vty_out (vty, "    Updates:       %10d %10d%s", p->update_out, p->update_in, VTY_NEWLINE);
+   vty_out (vty, "    Keepalives:    %10d %10d%s", p->keepalive_out, p->keepalive_in, VTY_NEWLINE);
+@@ -9280,6 +9461,13 @@ bgp_vty_init (void)
+   install_element (BGP_NODE, &neighbor_capability_dynamic_cmd);
+   install_element (BGP_NODE, &no_neighbor_capability_dynamic_cmd);
+ 
++  /* "neighbor advisory" commands */
++  install_element (ENABLE_NODE, &adv_logmsg_cmd);
++  install_element (BGP_NODE, &neighbor_advisory_cmd);
++  install_element (BGP_NODE, &no_neighbor_advisory_cmd);
++  install_element (BGP_NODE, &neighbor_advisory_static_cmd);
++  install_element (BGP_NODE, &no_neighbor_advisory_static_cmd);
++
+   /* "neighbor dont-capability-negotiate" commands. */
+   install_element (BGP_NODE, &neighbor_dont_capability_negotiate_cmd);
+   install_element (BGP_NODE, &no_neighbor_dont_capability_negotiate_cmd);
+diff -upwbr quagga/lib/memtypes.c quagga.new/lib/memtypes.c
+--- quagga/lib/memtypes.c	2009-11-16 12:35:00.000000000 +0000
++++ quagga.new/lib/memtypes.c	2009-11-16 01:06:29.000000000 +0000
+@@ -97,6 +97,7 @@ struct memory_list memory_list_bgp[] =
+   { MTYPE_PEER_GROUP,		"Peer group"			},
+   { MTYPE_PEER_DESC,		"Peer description"		},
+   { MTYPE_PEER_PASSWORD,	"Peer password string"		},
++  { MTYPE_PEER_ADV,		"Peer advisory string"		},
+   { MTYPE_ATTR,			"BGP attribute"			},
+   { MTYPE_ATTR_EXTRA,		"BGP extra attributes"		},
+   { MTYPE_AS_PATH,		"BGP aspath"			},
